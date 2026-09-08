@@ -13,6 +13,8 @@
 #include <string>
 
 #include "./util/GTestHelpers.h"
+#include "./util/IndexTestHelpers.h"
+#include "./util/ParsedQueryTestHelpers.h"
 #include "./util/TripleComponentTestHelpers.h"
 #include "global/Constants.h"
 #include "global/ValueId.h"
@@ -27,6 +29,7 @@
 
 using std::string;
 using namespace std::literals;
+using ad_utility::testing::encodedIriManager;
 using ad_utility::use_type_identity::ti;
 using Re2Parser = RdfStringParser<TurtleParser<Tokenizer>>;
 using CtreParser = RdfStringParser<TurtleParser<TokenizerCtre>>;
@@ -37,10 +40,6 @@ namespace {
 auto lit = ad_utility::testing::tripleComponentLiteral;
 auto iri = [](std::string_view s) {
   return TripleComponent::Iri::fromIriref(s);
-};
-auto encodedIriManager = []() -> const EncodedIriManager* {
-  static EncodedIriManager encodedIriManager_;
-  return &encodedIriManager_;
 };
 
 auto re2Parser = []() { return Re2Parser{encodedIriManager()}; };
@@ -832,7 +831,7 @@ TEST(RdfParserTest, collection) {
 
 // Test the parsing of an IRI reference.
 TEST(RdfParserTest, iriref) {
-  SKIP_IF_LOGLEVEL_IS_LOWER(WARN);
+  ENFORCE_LOG_LEVEL_OR_SKIP(WARN);
   // Run test for given parser.
   auto runTestsForParser = [](auto parser) {
     std::string iriref_1 = "<fine>";
@@ -1235,7 +1234,10 @@ TEST(RdfParserTest, betterErrorMessageOnMultilineLiteralError) {
 
 // Test that the parallel parser's destructor can be run quickly and without
 // blocking, even when there are still lots of blocks in the pipeline that are
-// currently being parsed.
+// currently being parsed. Draining the pipeline would take on the order of
+// seconds, so the bound below still proves the point but is generous enough
+// for a loaded CI runner (20ms were not, see the frequent spurious failures in
+// August 2026).
 TEST(RdfParserTest, stopParsingOnOutsideFailure) {
 #ifdef _QLEVER_NO_TIMING_TESTS
   GTEST_SKIP_("because _QLEVER_NO_TIMING_TESTS defined");
@@ -1266,7 +1268,7 @@ TEST(RdfParserTest, stopParsingOnOutsideFailure) {
       }();
       timer.cont();
     }
-    EXPECT_LE(timer.msecs(), 20ms);
+    EXPECT_LE(timer.msecs(), 200ms);
   };
   const std::string input = []() {
     std::string singleBlock = "<subject> <predicate> <object> . \n ";

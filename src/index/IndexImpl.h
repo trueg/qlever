@@ -269,7 +269,7 @@ class IndexImpl {
   // Read necessary meta data into memory and opens file handles.
   void addTextFromOnDiskIndex();
 
-  const auto& getVocab() const { return vocab_; };
+  const auto& getVocab() const { return vocab_; }
   auto& getNonConstVocabForTesting() { return vocab_; }
 
   // Replace the currently loaded vocabulary with a zero-copy view directly
@@ -307,7 +307,7 @@ class IndexImpl {
 
   const ad_utility::AllocatorWithLimit<Id>& allocator() const {
     return allocator_;
-  };
+  }
 
   ad_utility::BlankNodeManager* getBlankNodeManager() const;
 
@@ -415,7 +415,7 @@ class IndexImpl {
 
     // Returns true if the text block contains entries outside of the requested
     // range
-    bool hasToBeFiltered() const { return optIdRange_.has_value(); };
+    bool hasToBeFiltered() const { return optIdRange_.has_value(); }
 
     // The id range of the prefix or word used to retrieve the text block(s). It
     // is only set if computeHasToBeFiltered was determined to be true during
@@ -486,7 +486,7 @@ class IndexImpl {
 
   float getAverageNofEntityContexts() const {
     return textMeta_.getAverageNofEntityContexts();
-  };
+  }
 
   void setKbName(const std::string& name);
 
@@ -562,6 +562,13 @@ class IndexImpl {
   // configuration file is used instead (which approximates the END of the
   // build).
   std::string dateOfIndexBuild() const;
+
+  // The same as `dateOfIndexBuild` above, but for an index that is not
+  // loaded: `configurationJson` and `onDiskBase` are the configuration
+  // (`<onDiskBase>.meta-data.json`) and the base name of that index. This is
+  // useful for tooling that inspects an index on disk without loading it.
+  static std::string dateOfIndexBuild(const nlohmann::json& configurationJson,
+                                      const std::string& onDiskBase);
 
   // Format the given time as a UTC timestamp string in the
   // `DATE_OF_INDEX_BUILD_FORMAT` (e.g. `2026-07-12T14:03:52Z`).

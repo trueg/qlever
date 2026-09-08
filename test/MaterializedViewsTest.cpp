@@ -63,7 +63,7 @@ using V = Variable;
 
 // _____________________________________________________________________________
 TEST_F(MaterializedViewsTest, Basic) {
-  SKIP_IF_LOGLEVEL_IS_LOWER(INFO);
+  ENFORCE_LOG_LEVEL_OR_SKIP(INFO);
   // Write a simple view.
   clearLog();
   qlv().writeMaterializedView("testView1", simpleWriteQuery_);
@@ -405,7 +405,7 @@ TEST_F(MaterializedViewsTest, MetadataDependentConfigChecks) {
 
 // _____________________________________________________________________________
 TEST_F(MaterializedViewsTest, ColumnPermutation) {
-  SKIP_IF_LOGLEVEL_IS_LOWER(INFO);
+  ENFORCE_LOG_LEVEL_OR_SKIP(INFO);
   MaterializedViewsManager manager{testIndexBase_};
 
   // Helper to get all column names from a view via its `VariableToColumnMap`.
@@ -543,14 +543,68 @@ TEST_F(MaterializedViewsTest, InvalidInputToWriter) {
       manager.writeViewToDisk("Something Out!of~the.ordinary",
                               qlv().parseAndPlanQuery(simpleWriteQuery_)),
       ::testing::HasSubstr("not a valid name for a materialized view"));
-  AD_EXPECT_THROW_WITH_MESSAGE(
-      manager.writeViewToDisk(
-          "testView2",
-          qlv().parseAndPlanQuery(
-              "SELECT * { ?s ?p ?o . BIND(\"localVocabString\" AS ?g) }")),
-      ::testing::HasSubstr(
-          "The query to write a materialized view returned a string not "
-          "contained in the index (local vocabulary entry)"));
+
+  // Helper that checks that writing a materialized view for `query` throws an
+  // exception whose message contains `expectedError`.
+  auto expectWriteViewToDiskError =
+      [&](std::string query, std::string expectedError,
+          ad_utility::source_location location = AD_CURRENT_SOURCE_LOC()) {
+        auto trace = generateLocationTrace(location);
+        AD_EXPECT_THROW_WITH_MESSAGE(
+            manager.writeViewToDisk("invalidTestView",
+                                    qlv().parseAndPlanQuery(std::move(query))),
+            ::testing::HasSubstr(expectedError));
+      };
+
+  // `LocalVocabularyEntry` is rejected.
+  expectWriteViewToDiskError(
+      "SELECT * { ?s ?p ?o . BIND(\"localVocabString\" AS ?g) }",
+      "The query to write a materialized view returned a string not "
+      "contained in the index (local vocabulary entry)");
+
+  // Empty query is rejected.
+  expectWriteViewToDiskError("SELECT * { }",
+                             "needs to select at least one column");
+
+  // `LIMIT`/`OFFSET` is rejected.
+  expectWriteViewToDiskError(simpleWriteQuery_ + " LIMIT 1",
+                             "may not contain a `LIMIT` or `OFFSET` clause");
+  expectWriteViewToDiskError(simpleWriteQuery_ + " OFFSET 1",
+                             "may not contain a `LIMIT` or `OFFSET` clause");
+  expectWriteViewToDiskError(simpleWriteQuery_ + " LIMIT 5 OFFSET 10",
+                             "may not contain a `LIMIT` or `OFFSET` clause");
+
+  // An explicit `ORDER BY` clause is always rejected, because a view is
+  // always stored in the internal order of its first three columns.
+  expectWriteViewToDiskError(simpleWriteQuery_ + " ORDER BY ?p",
+                             "may not contain an `ORDER BY` clause");
+  expectWriteViewToDiskError(simpleWriteQuery_ + " ORDER BY DESC(?s)",
+                             "may not contain an `ORDER BY` clause");
+
+  // An `INTERNAL SORT BY` inconsistent with the view's SPO order is rejected.
+  expectWriteViewToDiskError(simpleWriteQuery_ + " INTERNAL SORT BY ?p",
+                             "must be a prefix of the view's columns");
+  expectWriteViewToDiskError(
+      simpleWriteQuery_ + " INTERNAL SORT BY ?doesNotExist",
+      "must be a prefix of the view's columns");
+
+  // More `INTERNAL SORT BY` keys than the view has columns.
+  expectWriteViewToDiskError(
+      "SELECT ?s ?p { ?s ?p ?o } INTERNAL SORT BY ?s ?p ?o",
+      "must be a prefix of the view's columns");
+
+  // An `INTERNAL SORT BY` that is consistent with the view's storage order
+  // (a prefix of the SELECTed columns) is allowed.
+  EXPECT_NO_THROW(manager.writeViewToDisk(
+      "testView7", qlv().parseAndPlanQuery(simpleWriteQuery_ +
+                                           " INTERNAL SORT BY ?s ?p ?o")));
+
+  // A `LIMIT` inside an explicit subquery is allowed. This is the escape
+  // hatch that the error message for a top-level `LIMIT` advertises.
+  EXPECT_NO_THROW(manager.writeViewToDisk(
+      "testView8",
+      qlv().parseAndPlanQuery(
+          "SELECT * { { SELECT * { ?s ?p ?o . BIND(1 AS ?g) } LIMIT 2 } }")));
 }
 
 // _____________________________________________________________________________
@@ -830,7 +884,7 @@ TEST_F(MaterializedViewsTest, ManualConfigurations) {
 // under Emscripten anyway (threaded server integration).
 #ifndef __EMSCRIPTEN__
 TEST_F(MaterializedViewsTest, serverIntegration) {
-  SKIP_IF_LOGLEVEL_IS_LOWER(INFO);
+  ENFORCE_LOG_LEVEL_OR_SKIP(INFO);
   using namespace serverTestHelpers;
   // Config for the plain `Server` instances constructed below.
   qlever::EngineConfig config;
@@ -961,11 +1015,9 @@ TEST_F(MaterializedViewsTest, serverIntegration) {
     auto request = makePostRequest(
         "/?cmd=write-materialized-view&view-name=testViewFromHTTP3",
         "application/sparql-query", simpleWriteQuery_);
-    AD_EXPECT_THROW_WITH_MESSAGE(
-        responseBodyAsJson(
-            makeServerForTesting(testIndexBase_).process(request)),
-        ::testing::HasSubstr("write-materialized-view requires a valid access "
-                             "token but no access token was provided"));
+    expectRequiresValidAccessToken("write-materialized-view", [&] {
+      makeServerForTesting(testIndexBase_).process(request);
+    });
   }
 
   // Test check for name of the view (missing).
@@ -1021,11 +1073,9 @@ TEST_F(MaterializedViewsTest, serverIntegration) {
   {
     auto request = makeGetRequest(
         "/?cmd=delete-materialized-view&view-name=testViewFromHTTP");
-    AD_EXPECT_THROW_WITH_MESSAGE(
-        responseBodyAsJson(
-            makeServerForTesting(testIndexBase_).process(request)),
-        ::testing::HasSubstr("delete-materialized-view requires a valid access "
-                             "token but no access token was provided"));
+    expectRequiresValidAccessToken("delete-materialized-view", [&] {
+      makeServerForTesting(testIndexBase_).process(request);
+    });
   }
 }
 #endif  // __EMSCRIPTEN__
@@ -1345,6 +1395,42 @@ TEST_F(MaterializedViewsTest, NoDuplicateRemovalOnScan) {
   }
 }
 
+// _____________________________________________________________________________
+TEST_F(MaterializedViewsTest, DistinctIsNotDroppedForViewScan) {
+  // For a regular `IndexScan`, a `DISTINCT` over all of the scan's columns is a
+  // no-op, because duplicate triples are removed while scanning. For a scan of
+  // a materialized view this deduplication does not happen (see
+  // `NoDuplicateRemovalOnScan` above), so the `DISTINCT` must not be dropped.
+
+  // Write a view in which every triple occurs twice, once for each of the two
+  // values of the fourth column `?g` (which we do not select below).
+  qlv().writeMaterializedView(
+      "dupView", "SELECT ?s ?p ?o ?g { ?s ?p ?o . VALUES ?g { 1 2 } }");
+  qlv().loadMaterializedView("dupView");
+
+  constexpr std::string_view distinctQuery = R"(
+    PREFIX view: <https://qlever.cs.uni-freiburg.de/materializedView/>
+    SELECT DISTINCT * {
+      SERVICE view:dupView {
+        _:config view:column-s ?s ;
+                 view:column-p ?p ;
+                 view:column-o ?o .
+      }
+    }
+  )";
+
+  // The `DISTINCT` is not a no-op here, so it has to be part of the query plan.
+  qpExpect(qlv(), distinctQuery,
+           h::Distinct({0, 1, 2}, ::testing::A<const QueryExecutionTree&>()));
+
+  // Consequently the result contains every triple exactly once, and not twice
+  // as the view scan itself does.
+  auto expected = getQueryResultAsIdTable(
+      "SELECT ?s ?p ?o { ?s ?p ?o } INTERNAL SORT BY ?s ?p ?o");
+  EXPECT_THAT(getQueryResultAsIdTable(std::string{distinctQuery}),
+              matchesIdTable(expected));
+}
+
 // Queries for testing `BIND` rewriting.
 constexpr std::string_view bindWriteQuery =
     R"(
@@ -1425,17 +1511,17 @@ TEST_F(MaterializedViewsTest, BindRewrite) {
     auto viewScanWithBind =
         viewScan("bindView", "?s2", "?o2", "?_ql_materialized_view_o", 3,
                  AC{{3, V{"?bind"}}});
-    qpExpect(
-        qlv(), bindThroughSpatialJoin,
-        h::spatialJoin(
-            100, -1, V{"?o"}, V{"?o2"}, std::nullopt, PayloadVariables::all(),
-            SpatialJoinAlgorithm::LIBSPATIALJOIN, SpatialJoinType::WITHIN_DIST,
-            // Matcher for left child of `SpatialJoin`: Scan on
-            // view without `BIND` push down.
-            viewScanNoBind,
-            // Matcher for right child of `SpatialJoin`: Scan on
-            // view with `BIND` push down due to matching variables.
-            viewScanWithBind));
+    qpExpect(qlv(), bindThroughSpatialJoin,
+             h::spatialJoin(
+                 100, -1, V{"?o"}, V{"?o2"}, std::nullopt,
+                 PayloadVariables::all(), SpatialJoinAlgorithm::LIBSPATIALJOIN,
+                 SpatialJoinType::WITHIN_DIST, std::nullopt,
+                 // Matcher for left child of `SpatialJoin`: Scan on
+                 // view without `BIND` push down.
+                 viewScanNoBind,
+                 // Matcher for right child of `SpatialJoin`: Scan on
+                 // view with `BIND` push down due to matching variables.
+                 viewScanWithBind));
   }
 
   // The `2 * ?o + 1` expression.
@@ -1785,7 +1871,7 @@ TEST(MaterializedViewsSpatialJoinTest, BoundingBoxBindRewrite) {
     auto sjMatcher = h::spatialJoin(
         -1, -1, V{"?geometry1"}, V{"?geometry2"}, std::nullopt,
         PayloadVariables::all(), SpatialJoinAlgorithm::LIBSPATIALJOIN,
-        SpatialJoinType::INTERSECTS,
+        SpatialJoinType::INTERSECTS, std::nullopt,
         // Push down of automatic `BIND`s through a `Join`.
         h::Join(viewScan(viewName, "?osm_id1", "?_ql_materialized_view_p",
                          "?geometry1", 4,
@@ -1903,6 +1989,43 @@ INSTANTIATE_TEST_SUITE_P(
         // An additional `BIND` is ignored and the view can still be used for
         // query rewriting. Also uses a different sorting.
         RewriteTestParams{std::string{simpleChainRenamedPlusBind}, 1500}));
+
+// _____________________________________________________________________________
+TEST_F(MaterializedViewsChainRewriteContextTest, ChainRewriteContext) {
+  qlv().writeMaterializedView("testViewChain", std::string{simpleChain});
+  qlv().loadMaterializedView("testViewChain");
+
+  // A degenerate chain (`?a <p1> ?b . ?b <p2> ?a`) must be rejected for
+  // rewriting (thus planned normally).
+  qpExpect(qlv(), "SELECT * { ?x <p1> ?v . ?v <p2> ?x }",
+           h::MultiColumnJoin(h::IndexScanFromStrings("?x", "<p1>", "?v"),
+                              h::IndexScanFromStrings("?v", "<p2>", "?x")));
+
+  // The same holds for a degenerate chain where the middle and the end are
+  // the same variable. Planning previously failed with an exception. The
+  // winning plan is not fixed here (the repeated variable is planned as an
+  // internal variable plus an equality filter, and the cache-key based
+  // rewriting may then legitimately replace the join by a scan of the view),
+  // so check that the query is planned and answered correctly instead of
+  // checking the plan.
+  EXPECT_EQ(qlv().query("SELECT ?x ?v { ?x <p1> ?v . ?v <p2> ?v }",
+                        ad_utility::MediaType::tsv),
+            "?x\t?v\n<x2>\t<v2>\n");
+
+  // Outside of any `GRAPH` clause, rewriting is applied.
+  auto chainView = std::bind_front(&viewScanSimple, "testViewChain");
+  qpExpect(qlv(), simpleChain, chainView("?s", "?m", "?o"));
+
+  // Inside `GRAPH <g1> {...}`, the triples are scanned restricted to graph
+  // `<g1>` and not replaced by the view without graph constraint.
+  qpExpect(
+      qlv(), "SELECT * { GRAPH <g1> { ?s <p1> ?m . ?m <p2> ?o } }",
+      h::Join(
+          h::IndexScanFromStrings("?s", "<p1>", "?m", {},
+                                  ad_utility::HashSet<std::string>{"<g1>"}),
+          h::IndexScanFromStrings("?m", "<p2>", "?o", {},
+                                  ad_utility::HashSet<std::string>{"<g1>"})));
+}
 
 // _____________________________________________________________________________
 TEST_F(MaterializedViewsTest, JoinBetweenLazyScansWithPlaceholderVars) {
